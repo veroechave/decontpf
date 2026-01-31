@@ -1,0 +1,12 @@
+name: decontpf
+channels:
+  - conda-forge
+  - bioconda
+  - defaults
+  - nodefaults
+dependencies:
+  - seqkit
+  - cutadapt
+  - wget
+  - star
+prefix: /home/vant/miniforge3/envs/decontpf
