@@ -21,8 +21,8 @@ bash scripts/index.sh res/contaminants.fasta res/contaminants_idx
 
 
 # 2 AUTOMATIC SAMPLE IDENTIFICATION
-# Dynamically detect samples in the data folder instead of hardcoding names.
-# It extracts the ID before the first dash (-) from .fastq.gz files.
+# Dynamically detect samples in the data folder instead of hardcoding names
+# It extracts the ID before the first dash (-) from .fastq.gz files
 SAMPLE_LIST=$(ls data/*.fastq.gz | xargs -n 1 basename | cut -d "-" -f 1 | sort -u)
 
 echo "Samples detected for processing: $SAMPLE_LIST"
