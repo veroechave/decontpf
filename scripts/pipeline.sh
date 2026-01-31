@@ -1,39 +1,90 @@
-#Download all the files specified in data/filenames
-for url in $(<list_of_urls>) #TODO
-do
-    bash scripts/download.sh $url data
-done
+#!/bin/bash
 
-# Download the contaminants fasta file, uncompress it, and
-# filter to remove all small nuclear RNAs
-bash scripts/download.sh <contaminants_url> res yes #TODO
+# 1 SETUP AND DATA DOWNLOAD
+echo "Starting sequencing data download..."
 
-# Index the contaminants file
+# Download samples using the provided URLs file
+# -N: Only download if the file is newer or missing (Idempotency)
+wget -N -i data/urls -P data/
+
+echo "Preparing contaminants database..."
+# Official URL provided in the assignment instructions
+CONTAMINANTS_URL="https://bioinformatics.cnio.es/data/courses/decont/contaminants.fasta.gz"
+
+# Execute the download script (handles filtering and decompression)
+# We store results in the 'res' directory
+bash scripts/download.sh "$CONTAMINANTS_URL" res yes "small nuclear"
+
+echo "Generating index for STAR aligner..."
+# Index the filtered contaminants using the dedicated script
 bash scripts/index.sh res/contaminants.fasta res/contaminants_idx
 
-# Merge the samples into a single file
-for sid in $(<list_of_sample_ids>) #TODO
+
+# 2 AUTOMATIC SAMPLE IDENTIFICATION
+# Dynamically detect samples in the data folder instead of hardcoding names.
+# It extracts the ID before the first dash (-) from .fastq.gz files.
+SAMPLE_LIST=$(ls data/*.fastq.gz | xargs -n 1 basename | cut -d "-" -f 1 | sort -u)
+
+echo "Samples detected for processing: $SAMPLE_LIST"
+
+
+# 3 PROCESSING: MERGING AND ADAPTER TRIMMING
+for SAMPLE_ID in $SAMPLE_LIST
 do
-    bash scripts/merge_fastqs.sh data out/merged $sid
+    echo ">>> Processing sample: $SAMPLE_ID"
+
+    # STEP A: Merge technical replicates
+    MERGED_FILE="out/merged/${SAMPLE_ID}.fastq.gz"
+    
+    if [ -f "$MERGED_FILE" ]; then
+        echo "Notice: Merged file for $SAMPLE_ID already exists. Skipping..."
+    else
+        bash scripts/merge_fastqs.sh data out/merged "$SAMPLE_ID"
+    fi
+
+    # STEP B: Adapter removal (Cutadapt)
+    mkdir -p out/trimmed log/cutadapt
+    TRIMMED_FILE="out/trimmed/${SAMPLE_ID}.trimmed.fastq.gz"
+    
+    if [ -f "$TRIMMED_FILE" ]; then
+        echo "Notice: $SAMPLE_ID already has adapters removed. Skipping..."
+    else
+        echo "Running Cutadapt for $SAMPLE_ID..."
+        # -m 18: Discards reads shorter than 18nt after trimming
+        cutadapt -m 18 -a TGGAATTCTCGGGTGCCAAGG --discard-untrimmed \
+            -o "$TRIMMED_FILE" "$MERGED_FILE" > log/cutadapt/${SAMPLE_ID}.log
+    fi
+
+    # STEP C: Alignment and Decontamination (STAR)
+    STAR_OUTPUT_DIR="out/star/${SAMPLE_ID}"
+    mkdir -p "$STAR_OUTPUT_DIR"
+
+    # We are looking for UNMAPPED reads (the decontaminated data)
+    CLEAN_READS="${STAR_OUTPUT_DIR}/Unmapped.out.mate1"
+
+    if [ -f "$CLEAN_READS" ]; then
+        echo "Notice: STAR analysis for $SAMPLE_ID is already complete. Skipping..."
+    else
+        echo "Aligning $SAMPLE_ID against contaminants list..."
+        STAR --runThreadN 4 --genomeDir res/contaminants_idx \
+             --outReadsUnmapped Fastx \
+             --readFilesIn "$TRIMMED_FILE" \
+             --readFilesCommand gunzip -c \
+             --outFileNamePrefix "${STAR_OUTPUT_DIR}/"
+    fi
 done
 
-# TODO: run cutadapt for all merged files
-# cutadapt -m 18 -a TGGAATTCTCGGGTGCCAAGG --discard-untrimmed \
-#     -o <trimmed_file> <input_file> > <log_file>
 
-# TODO: run STAR for all trimmed files
-for fname in out/trimmed/*.fastq.gz
+# 4 FINAL REPORT GENERATION
+REPORT_LOG="log/pipeline_summary.log"
+echo "FINAL PIPELINE REPORT" > "$REPORT_LOG"
+echo "Date: $(date)" >> "$REPORT_LOG"
+
+for SAMPLE_ID in $SAMPLE_LIST
 do
-    # you will need to obtain the sample ID from the filename
-    sid=#TODO
-    # mkdir -p out/star/$sid
-    # STAR --runThreadN 4 --genomeDir res/contaminants_idx \
-    #    --outReadsUnmapped Fastx --readFilesIn <input_file> \
-    #    --readFilesCommand gunzip -c --outFileNamePrefix <output_directory>
-done 
+    echo -e "\n--- STATISTICS: $SAMPLE_ID ---" >> "$REPORT_LOG"
+    grep "Reads with adapters" "log/cutadapt/${SAMPLE_ID}.log" >> "$REPORT_LOG"
+    grep "Uniquely mapped reads %" "out/star/${SAMPLE_ID}/Log.final.out" >> "$REPORT_LOG"
+done
 
-# TODO: create a log file containing information from cutadapt and star logs
-# (this should be a single log file, and information should be *appended* to it on each run)
-# - cutadapt: Reads with adapters and total basepairs
-# - star: Percentages of uniquely mapped reads, reads mapped to multiple loci, and to too many loci
-# tip: use grep to filter the lines you're interested in
+echo "Pipeline finished successfully. Check the summary at $REPORT_LOG"
